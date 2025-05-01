@@ -1,0 +1,841 @@
+---
+title: "Enron Data Replication"
+author: "Olivia Beck"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+library(igraph)
+library(igraphdata)
+library(stringr)
+library(pscl)
+library(LaplacesDemon)
+library(stargazer)
+library(glmmTMB)
+library(dplyr)
+library(kableExtra)
+
+set.seed(133458)
+```
+
+## Data Set Up
+
+### Node Attributes
+
+```{r}
+data(enron)
+enron <- upgrade_graph(enron) #see if this is what is causing the discrepancy 
+
+### Attributes
+node.att <- vertex.attributes(enron)
+edge.att <- edge.attributes(enron)
+
+possible.positions <- c("CEO", "President", "Director", "Manager", "Employee", "Trader", "Lawyer", "NA")
+
+#position is one of the 8 original positions
+#need to standardize from the raw data
+V(enron)$position <- rep(NA, gorder(enron))
+for(i in 1:gorder(enron)){
+  #extract language 
+  temp <- V(enron)$Note[i]
+  temp <- gsub('[[:punct:] ]+',' ',temp)
+  temp <- str_split(temp, " ")
+  
+  #match to possible position
+  which.pos <- possible.positions %in% temp[[1]]
+  V(enron)$position[i]  <- possible.positions[which.pos]
+  
+}
+
+#position2 is standardized to CP + DM
+V(enron)$position2 <- rep(NA, gorder(enron))
+for( i in 1:gorder(enron)){
+  temp <- V(enron)$position[i]
+  if(temp %in% c("CEO", "President")){V(enron)$position2[i] <- "CP"}
+  else if(temp %in% c("Director", "Manager")){V(enron)$position2[i] <- "DM"}
+  else(V(enron)$position2[i] <- V(enron)$position[i] )
+}
+
+#there should be 77 nodes in total
+sum(V(enron)$position2 == 'CP')
+sum(V(enron)$position2 == "DM")
+
+sum(V(enron)$position2 == 'CP') + sum(V(enron)$position2 == "DM")
+```
+
+
+### Extract Week 155
+
+```{r}
+### Extract week 155 
+times <- strptime(E(enron)$Time, format = "%Y-%m-%d")
+start155 <-  strptime("2001-10-19", format = "%Y-%m-%d")  #starts 1 second before this time
+end155 <- strptime("2001-10-26", format = "%Y-%m-%d") + 24*60*60 -1    #end the last second of the day
+
+keep.edges <- (1:length(E(enron)))[times > start155-1 & times <= end155  ]
+range(E(enron)$Time[keep.edges])
+
+enron.week155 <- subgraph.edges(enron, keep.edges, delete.vertices = FALSE)
+
+## Extract CEO/President and Directors/Managers
+keep.nodes <- V(enron.week155)[ V(enron.week155)$position2 %in% c("CP", "DM")]
+enron77 <- induced_subgraph(enron.week155, keep.nodes)
+
+
+#getting undirected matrix
+enron77.undir <- as.undirected(enron77, mode = "each")
+enron77.undir <- simplify(enron77.undir, remove.multiple = FALSE) #remove selfloops
+
+#checking the adjacent matrix is symmetric
+mat <- as.matrix(as_adjacency_matrix(enron77.undir))
+isSymmetric(as.matrix(mat))
+
+#checking we have the correct number of edges, should be 98
+num.pairs.exchange <- sum((mat > 0))/2 
+num.pairs.exchange
+
+#converting the multi-edge network to a weighted network
+enron77.weighed <- graph.adjacency(mat,
+                                   weighted=TRUE,
+                                   mode = "undirected")
+
+V(enron77.weighed)$position2 <- V(enron77.undir)$position2
+
+
+#verify ~ 60% of pairs exchanged more than 5 emails 
+#is currntly ~ 48%
+mean(E(enron77.weighed)$weight > 5) 
+
+#verify percentage of zero's is 0.966
+sum(mat == 0) / nrow(mat)^2
+
+#verify modularity ~0.05
+modularity(enron77.weighed, 
+           ifelse(V(enron77.weighed)$position2 == "DM",1,2),
+           weights = E(enron77.weighed)$weight)
+
+## By hand
+Q <- 0
+n <- gorder(enron77.weighed)
+adj.mat <- as.matrix(as_adj(enron77.weighed, attr = "weight"))
+m <- sum(adj.mat/2)
+deg <- colSums(adj.mat)
+position <- V(enron77.weighed)$position2
+
+for(i in 1:n){
+  for(j in 1:n){
+    Q <- Q + (adj.mat[i,j] - deg[i]*deg[j]/2/m) * (position[i] == position[j])
+  }
+}
+
+Q / 2 / m
+
+```
+
+
+
+## Fitting the Model
+
+### Set up the Design matrix
+
+```{r}
+## Set up D, the design matrix
+#initialize
+design.mat <- as.data.frame(t(combn(1:77, 2)))
+n <- nrow(design.mat)
+
+#Filling out the other variables
+design.mat$Val <- design.mat$DMDM <- design.mat$CPCP <- design.mat$CPDM <- rep(NA, n)
+
+for(i in 1:n){
+  #value
+  design.mat$Val[i] <- mat[design.mat$V1[i], design.mat$V2[i]]
+  
+  #attributes
+  v1.att <- V(enron77.undir)$position2[design.mat$V1[i]]
+  v2.att <- V(enron77.undir)$position2[design.mat$V2[i]]
+  
+  #original attributes 
+  design.mat$CPCP[i] <- as.numeric(v1.att == "CP" & v2.att == "CP")
+  design.mat$DMDM[i] <- as.numeric(v1.att == "DM" & v2.att == "DM")
+  design.mat$CPDM[i] <- as.numeric(v1.att != v2.att)
+  
+}
+
+```
+
+### Regular Poisson Regression 
+
+Author's Poisson regression estimated model is: 
+
+$$\log(\lambda_{ij}) = -0.74 -0.607*CPDM_{ij} - 0.6 * DMDM_{ij}$$
+
+My estimated model is: 
+
+$$\log(\lambda_{ij}) = -0.719 -0.917*CPDM_{ij} -1.187 * DMDM_{ij}$$
+I atleast have the same signs, but I do not have the same parameter estimates. 
+
+```{r}
+
+## Get my model
+mod1 <- glm(Val ~ CPDM + DMDM, family="poisson", data = design.mat)
+summary(mod1)
+
+design.mat$predicted <- predict.glm(mod1, type = "response")
+
+
+### Add their model values 
+design.mat$their.predicted <- exp(-0.74 -0.607*design.mat$CPDM - 0.6 * design.mat$DMDM)
+my.test <- -0.71912 -0.91771*design.mat$CPDM - 1.18705 * design.mat$DMDM
+
+
+### Table of True y's vs. Predicted y's
+table(design.mat$predicted, design.mat$Val)
+
+
+## My results are predicting all 0's 
+table((design.mat$predicted))
+plot(design.mat$Val, design.mat$predicted,
+     xlab = "true value",
+     ylab = "predicted value")
+
+## Their results predict 73% 0
+table(design.mat$their.predicted)
+
+
+### I can get tp 73% by adding the number of obs with the lowest 2 predicted values, 
+### But 0.477 is still not rounded to 1 so idk why they claim 73% 0's
+(666+1480) /nrow(design.mat) 
+
+
+```
+
+
+
+### ZIP Lapace approx
+
+```{r}
+
+#### Zero inflated poisson regression -------------------------------------
+#original model 
+mod2 <- zeroinfl(Val ~ 0+ CPCP +CPDM + DMDM | 1, data = design.mat) #original model 
+
+
+# mod2 <- zeroinfl(Val ~ CPDM + DMDM, data = design.mat) #original model 
+
+
+summary(mod2) #same as above, very close to theirs but not exact same estimates, standard errors are very close though which makes me hopeful
+
+s.mod2 <- summary(mod2)
+s.mod2$coefficients
+
+#stargazer(s.mod2$coefficients)
+
+
+
+```
+
+
+
+### Mean values 
+
+```{r}
+mean0 <- mean(design.mat$Val == 0)
+meanCPCP <- design.mat %>% filter(CPCP == 1 & Val > 0) %>% pull(Val) %>% mean()
+meanCPDM <- design.mat %>% filter(CPDM == 1 & Val > 0) %>% pull(Val) %>% mean()
+meanDMDM <- design.mat %>% filter(DMDM == 1 & Val > 0) %>% pull(Val) %>% mean()
+
+
+# Model estimate Zeros
+invlogit(3.427144)
+
+#approximate estimate zeros
+mean0
+
+# Model estimate counts 
+coeffs <- s.mod2$coefficients$count[, 1]
+exp(c( coeffs[1:3] ))
+c(meanCPCP, meanCPDM, meanDMDM)
+
+```
+
+
+### Likelihood maximize with optim - should be same as pscl package
+
+```{r}
+estimate_params <- function(y_A, y_B, y_C, m0, m0_A, m0_B, m0_C) {
+  # Sample sizes and means for non-zero responses
+  m1_A <- length(y_A)
+  m1_B <- length(y_B)
+  m1_C <- length(y_C)
+  
+  m1 <- m1_A + m1_B + m1_C
+  
+  ybar_A <- mean(y_A)
+  ybar_B <- mean(y_B)
+  ybar_C <- mean(y_C)
+  
+  # Negative log-likelihood function
+  neg_log_likelihood <- function(params) {
+    theta <- params[1]
+    lambda_A <- params[2]
+    lambda_B <- params[3]
+    lambda_C <- params[4]
+    
+    if (theta <= 0 || theta >= 1 || lambda_A <= 0 || lambda_B <= 0 || lambda_C <= 0) {
+      return(Inf)
+    }
+    
+    # Log-likelihood components
+    ll_theta <- -m1 / (1 - theta) + m0 / theta - 
+      (1 / theta^2) * (m0_A * exp(-lambda_A) + m0_B * exp(-lambda_B) + m0_C * exp(-lambda_C))
+    
+    ll_lambda_A <- -m1_A + (m1_A * ybar_A) / lambda_A + 
+      m0_A * ((1 - theta) / theta) * lambda_A * exp(-lambda_A)
+    
+    ll_lambda_B <- -m1_B + (m1_B * ybar_B) / lambda_B + 
+      m0_B * ((1 - theta) / theta) * lambda_B * exp(-lambda_B)
+    
+    ll_lambda_C <- -m1_C + (m1_C * ybar_C) / lambda_C + 
+      m0_C * ((1 - theta) / theta) * lambda_C * exp(-lambda_C)
+    
+    # Total negative log-likelihood (sum of squared score functions)
+    nll <- ll_theta^2 + ll_lambda_A^2 + ll_lambda_B^2 + ll_lambda_C^2
+    return(nll)
+  }
+  
+  # Initial parameter guesses: theta, lambda_A, lambda_B, lambda_C
+  init <- c(0.5, mean(y_A), mean(y_B), mean(y_C))
+  
+  result <- optim(
+    par = init,
+    fn = neg_log_likelihood,
+    method = "L-BFGS-B",
+    lower = c(1e-5, 1e-5, 1e-5, 1e-5),
+    upper = c(1 - 1e-5, Inf, Inf, Inf)
+  )
+  
+  return(result$par)  # returns estimated theta, lambda_A, lambda_B, lambda_C
+}
+
+
+# Sample non-zero y values
+y_A <- design.mat$Val[design.mat$Val > 0 & design.mat$CPCP == 1]
+y_B <- design.mat$Val[design.mat$Val > 0 & design.mat$DMDM == 1]
+y_C <- design.mat$Val[design.mat$Val > 0 & design.mat$CPDM == 1]
+
+# Known m0 values
+m0 <- sum(design.mat$Val == 0 )
+m0_A <- sum(design.mat$Val == 0 & design.mat$CPCP == 1)
+m0_B <- sum(design.mat$Val == 0 & design.mat$DMDM == 1)
+m0_C <- sum(design.mat$Val == 0 & design.mat$CPDM == 1)
+
+optim.results <- estimate_params(y_A, y_B, y_C, m0, m0_A, m0_B, m0_C)
+
+optim.results
+
+#model results 
+c(invlogit(3.427), exp(c(coeffs[1], coeffs[1] + coeffs[2], coeffs[1] + coeffs[3]))
+)
+```
+
+
+### glmmTMB
+
+```{r}
+
+mod3 <- glmmTMB(Val ~ 0 + CPCP + CPDM + DMDM,
+                ziformula =~ 1,
+                family =poisson(),
+                data = design.mat)
+
+sum3 <- summary(mod3)
+coeffs3 <- sum3$coefficients$cond[,1]
+
+exp(c(coeffs3[1:3]))
+
+exp(c(coeffs[1:3]))
+
+
+```
+
+
+
+### Table of Estimates 
+
+```{r}
+## Means in betas ( and sd betas)
+m <- nrow(design.mat)
+
+# Analytic 
+beta.analytic <- c(logit(mean0), log(meanCPCP), log(meanCPDM), log(meanDMDM))
+
+# need delta method for sd estiamtes 
+beta0_se <- function(theta, se ){
+  return(se / theta / (1-theta))
+}
+
+
+lambda_se <- function(lambda, se){
+  return(se / lambda)
+}
+
+
+mCPCP <- sum(design.mat$CPCP == 1 & design.mat$Val > 0)
+mCPDM <- sum(design.mat$CPDM == 1 & design.mat$Val > 0)
+mDMDM <- sum(design.mat$DMDM == 1 & design.mat$Val > 0)
+
+
+sd.analytic <- c(beta0_se(mean0 , sqrt(mean0*(1-mean0)/m)), 
+                 lambda_se(meanCPCP, sqrt(meanCPCP/mCPCP)),
+                 lambda_se(meanCPDM, sqrt(meanCPCP/mCPDM)),
+                 lambda_se(meanDMDM, sqrt(meanCPCP/mDMDM)))
+
+## laplace 
+coeff.laplace <- coefficients(sum3)
+
+beta.laplace <- c(coeff.laplace$zi[1,1],
+                  coeff.laplace$cond[1:3,1])
+
+sd.laplace <- c(coeff.laplace$zi[1,2],
+                  coeff.laplace$cond[1:3,2])
+
+
+
+coeff.optim <- coefficients(s.mod2)
+
+beta.optim <- c(coeff.optim$zero[1,1],
+                  coeff.optim$count[1:3,1])
+sd.optim <- c(coeff.optim$zero[1,2],
+                  coeff.optim$count[1:3,2])
+
+
+est.tab <- 
+  data.frame(params = c("beta0", "betaCPCP", "betaCPDM", "betaDMDM", "sebeta0", "sebetaCPCP", "sebetaCPDM", "sebetaDMDM"),
+             analytic = c(beta.analytic, sd.analytic), 
+             laplace = c(beta.laplace, sd.laplace),
+             optim = c(beta.optim, sd.optim)) %>% 
+  pivot_longer(!params, names_to = "method", values_to = "est")%>% 
+  mutate(est = round(est, 6)) %>%
+  pivot_wider(names_from = params, values_from = "est") 
+  
+
+
+est.tab
+
+### max means 
+max12 <- max(abs(est.tab[1, 2:5] - est.tab[2, 2:5]))
+max13 <- max(abs(est.tab[1, 2:5] - est.tab[3, 2:5]))
+max23 <- max(abs(est.tab[2, 2:5] - est.tab[3, 2:5]))
+max(c(max12, max23, max13))
+
+## max sd 
+maxsd12 <- max(abs(est.tab[1, 6:9] - est.tab[2, 6:9]))
+maxsd13 <- max(abs(est.tab[1, 6:9] - est.tab[3, 6:9]))
+maxsd23 <- max(abs(est.tab[2, 6:9] - est.tab[3, 6:9]))
+max(c(maxsd12, maxsd13, maxsd23))
+```
+
+
+## Simulation Study 
+
+```{r}
+#### Simulation Study ------------------------------------------------------
+
+# "True" Values 
+# Mine
+beta0 <- beta.analytic[1]
+betaCPCP <- beta.analytic[2]
+betaCPDM <-beta.analytic[3]
+betaDMDM <- beta.analytic[4]
+
+# ## Theirs
+# beta0 <- 2.17
+# betaCPDM <- 0.016
+# betaDMDM <- 0.40
+# gamma0 <- 3.36
+# 
+theta <- invlogit(beta0)
+
+
+# Setting up CPDM and DMDM values for every (i,j)
+CPCP.mat<- matrix(0, nrow = 77, ncol = 77)
+CPDM.mat <- matrix(0, nrow = 77, ncol = 77)
+DMDM.mat <- matrix(0, nrow = 77, ncol = 77)
+for(i in 1:76){
+  for(j in (i+1):77){
+    v1.att <- V(enron77.undir)$position2[i]
+    v2.att <- V(enron77.undir)$position2[j]
+    CPCP.mat[i, j] <- as.numeric(v1.att == "CP" & v2.att == "CP")
+    DMDM.mat[i, j] <- as.numeric(v1.att == "DM" & v2.att == "DM")
+    CPDM.mat[i, j] <- as.numeric(v1.att != v2.att)
+  }
+}
+CPCP.mat <- CPCP.mat + t(CPCP.mat)
+CPDM.mat <- CPDM.mat + t(CPDM.mat)
+DMDM.mat <- DMDM.mat + t(DMDM.mat)
+
+
+# Running the simulation 
+N <- 10000
+rep <- array(0, c(77, 77, N) )
+
+for(n in 1:N){
+  for(i in 1:76){
+    for(j in (i+1):77){
+      is.from.zero <- rbinom(1, 1, theta)
+      if(is.from.zero == 1){rep[i,j,n] <- 0}else{
+        current.CPCP <- CPCP.mat[i, j]
+        current.CPDM <- CPDM.mat[i, j]
+        current.DMDM <-DMDM.mat[i, j]
+        l <- exp(betaCPCP*current.CPCP + betaCPDM*current.CPDM + betaDMDM*current.DMDM)
+        rep[i,j,n] <- rpois(1, l)
+      } #end if else
+    }# end j for
+  } # end i for
+  rep[ , , n] <- rep[ , , n] + t(rep[ , , n ])
+} # end n for
+
+
+
+## Simulation Parameters 
+betaCPCP.sim <- rep(NA, N)
+betaCPDM.sim <- rep(NA, N)
+betaDMDM.sim <- rep(NA, N)
+beta0.sim <- rep(NA, N)
+
+## Centrality Storage 
+degree.sim <- matrix(NA, ncol = N, nrow = 77)
+strength.sim <- matrix(NA, ncol = N, nrow = 77)
+eigen.sim <- matrix(NA, ncol = N, nrow = 77)
+between.sim <- matrix(NA, ncol = N, nrow = 77)
+
+
+#get the design matrix for each iteration
+design.temp <- design.mat[, c("V1", "V2", "CPCP", "CPDM", "DMDM")]
+design.temp$Val <- rep(NA, nrow(design.temp))
+
+for(n in 1:N){
+  A <- rep[ , , n]
+  #get the simulated values
+  for(i in 1:nrow(design.temp)){
+    design.temp$Val[i] <- A[design.temp$V1[i], design.temp$V2[i]]
+  }
+  # ### Model estimates
+  # #get model
+  # mod.temp <- zeroinfl(Val ~ 0+CPCP +CPDM + DMDM | 1, data = design.temp)
+  # ests.temp <- mod.temp$coefficients
+  
+  #Store estimates
+  beta0.sim[n] <- logit(mean(design.temp$Val ==0))
+  betaCPCP.sim[n] <- log(mean(design.temp$Val[design.temp$CPCP == 1 & design.temp$Val > 0]))
+  betaDMDM.sim[n] <- log(mean(design.temp$Val[design.temp$DMDM == 1 & design.temp$Val > 0]))
+  betaCPDM.sim[n] <- log(mean(design.temp$Val[design.temp$CPDM == 1 & design.temp$Val > 0]))
+
+  ### Centrality estimates
+  #get igraph
+  # g.temp <- graph_from_adjacency_matrix(A, mode = "undirected", weighted = TRUE)
+  
+  #get centrality measures
+  # degree.sim[ , n] <- igraph::degree(g.temp)
+  # strength.sim[ , n] <- igraph::strength(g.temp)
+  # eigen.sim[ , n] <- igraph::eigen_centrality(g.temp)$vector
+  # between.sim[ , n] <- igraph::betweenness(g.temp, normalized = TRUE)
+}
+
+
+
+
+```
+
+
+### Plot Simulation Results 
+
+```{r}
+### Plot Simulation results -------------------------------------------
+par(mfrow = c(2,2))
+## Parameter Estimates
+b=40
+ymax =1200
+
+hist(beta0.sim, main = "beta0 simulation",
+     ylim = c(0, ymax), 
+     breaks=b)
+abline(v = beta0, col = "red")
+
+
+hist(betaCPCP.sim, main = "betaCPCP simulation",
+     ylim = c(0, ymax), 
+     breaks=b)
+abline(v = betaCPCP, col = "red")
+
+hist(betaCPDM.sim, main = "betaCPDM simulation",
+     ylim = c(0, ymax), 
+     breaks=b)
+abline(v = betaCPDM, col = "red")
+
+hist(betaDMDM.sim, main = "betaDMDM simulation",
+     ylim = c(0, ymax), 
+     breaks=b)
+abline(v = betaDMDM, col = "red")
+```
+
+
+
+
+```{r}
+
+#table of estimate Results 
+df1 <- data.frame(param = c("beta0","betaCPCP", "betaCPDM", "betaDMDM"),
+           truevalue = c(beta0, betaCPCP, betaCPDM, betaDMDM), 
+           est = c(mean(beta0.sim), mean(betaCPCP.sim), mean(betaCPDM.sim), mean(betaDMDM.sim)),
+           sd =  c(sd(beta0.sim), sd(betaCPCP.sim),sd(betaCPDM.sim), sd(betaDMDM.sim)))  
+stargazer(df1)
+
+
+par(mfrow = c(1,1))
+
+
+## Plot centrality results ---------------------------------
+library(ggplot2)
+library(dplyr)
+##  Degree - Figure 2(a)
+
+
+degree.frame <- as.data.frame(expand.grid(1:N, 0:max(degree.sim)))
+colnames(degree.frame) <- c("samp.number", "degree.value")
+degree.frame$prop.degree.value <- NA
+
+
+for(i in 1:nrow(degree.frame)){
+  #get the degrees
+  degree.temp <- degree.sim[, degree.frame$samp.number[i]]
+  
+  #get the number of times that degree occurred in that sample
+  count <- (sum(degree.temp == degree.frame$degree.value[i]) )
+  
+  # get prob of that degree value occurring 
+  degree.frame$prop.degree.value[i] <- count / 77
+  
+  
+}
+
+
+#add on max(degree.sim) + 1 to 25 for plot 
+degree.frame2 <- as.data.frame(expand.grid(1:N, (max(degree.sim)+1):25))
+colnames(degree.frame2) <- c("samp.number", "degree.value")
+degree.frame2$prop.degree.value <- 0
+
+degree.frame <- rbind(degree.frame, degree.frame2)                              
+
+
+degree.true <- data.frame(degree.value = 0:25, 
+                          prop.degree.value = 0)
+
+for(i in 1:nrow(degree.true)){
+  degree.true$prop.degree.value[i] <-  sum(igraph::degree(enron77.undir) == degree.true$degree.value[i]) / 77
+}
+
+#plot
+level_order <- as.character(0:25) 
+degree.true$degree.value <- base::factor(degree.true$degree.value, levels = level_order)
+
+degree.frame %>%
+  ggplot(aes(x = factor(degree.value, level = level_order), 
+             y = prop.degree.value )) +
+  geom_boxplot() + 
+  geom_point(data = degree.true[1:26, ], 
+             aes(x =factor(degree.value, level = level_order), 
+                 y = prop.degree.value ), color= "red") +
+  xlab('Degree') + 
+  ylab("Proportion with degree value in each simulation") +
+  ggtitle("Simulation Results of Degree") +
+  theme_minimal()
+
+ 
+
+## Strength - Figure 2(b)
+
+strength.frame <- as.data.frame(expand.grid(1:N, c(0:10)*30  ))
+colnames(strength.frame) <- c("samp.number", "strength.minimum")
+strength.frame$strength.maximum <- strength.frame$strength.minimum+30
+strength.frame$prop.strength <- NA
+
+for(i in 1:nrow(strength.frame)){
+  #get the degrees
+  strength.temp <- strength.sim[, strength.frame$samp.number[i]]
+  
+  #get the number of times that strenth categorty occurred in that sample
+  if(strength.frame$strength.minimum[i] == 0){
+    count <-  sum((strength.temp >= strength.frame$strength.minimum[i]) & (strength.temp <=strength.frame$strength.maximum[i] ))
+  }else{
+    count <-  sum((strength.temp > strength.frame$strength.minimum[i]) & (strength.temp <=strength.frame$strength.maximum[i] ))
+  }
+
+  # get prob of that strength value occurring 
+  strength.frame$prop.strength[i] <- count / 77
+  
+  
+}
+
+
+strength.true <- data.frame(strength.min = c(0:10)*30, 
+                            strength.max = c(0:10)*30 +30,
+                            prop.strength = 0)
+strength.vals <- strength(enron77.undir)
+
+for(i in 1:nrow(strength.true)){
+  count <- sum(strength.vals > strength.true$strength.min[i] & strength.vals <= strength.true$strength.max[i])
+  if(strength.true$strength.min[i] ==0){
+    count <- count + sum(strength.vals == 0)
+  }
+  strength.true$prop.strength[i] <- count / 77
+}
+
+
+
+strength.frame %>%
+  ggplot(aes(x = factor(strength.minimum), 
+             y = prop.strength )) +
+  geom_boxplot() + 
+  geom_point(data = strength.true, 
+             aes(x =factor(strength.min), 
+                 y = prop.strength ), color= "red") +
+  xlab('Strength') + 
+  ylab("Proportion with Strength range in each simulation") +
+  ggtitle("Simulation Results of Strength")+
+  scale_x_discrete(labels = c("[0, 30]", "(30, 60]", "(60, 90]",
+                              "(90, 120]", "(120, 150]", "(150, 180]",
+                              "(180, 210]", "(210, 240]", "(240, 270]",
+                              "(270, 300]", "(300, 330]")) +
+  theme_minimal() +
+  theme(axis.text.x=element_text(angle=45, hjust=1)) 
+
+
+
+## Eigenvector - Figure 2(c)
+
+eigen.frame <- as.data.frame(expand.grid(1:N, c(0:9)/10  ))
+colnames(eigen.frame) <- c("samp.number", "eigen.minimum")
+eigen.frame$eigen.maximum <- eigen.frame$eigen.minimum+0.1
+eigen.frame$prop.eigen <- NA
+
+for(i in 1:nrow(eigen.frame)){
+  #get the degrees
+  eigen.temp <- eigen.sim[, eigen.frame$samp.number[i]]
+  
+  #get the number of times that strenth categorty occurred in that sample
+  if(eigen.frame$eigen.minimum[i] == 0){
+    count <-  sum((eigen.temp >= eigen.frame$eigen.minimum[i]) & (eigen.temp <=eigen.frame$eigen.maximum[i] ))
+  }else{
+    count <-  sum((eigen.temp > eigen.frame$eigen.minimum[i]) & (eigen.temp <=eigen.frame$eigen.maximum[i] ))
+  }
+  
+  # get prob of that eigen value occurring 
+  eigen.frame$prop.eigen[i] <- count / 77
+
+}
+
+
+eigen.true <- data.frame(eigen.min = c(0:9)*.1, 
+                            eigen.max = c(0:9)*.1 +.1,
+                            prop.eigen = 0)
+eigen.vals <- eigen_centrality(enron77.undir)$vector
+
+for(i in 1:nrow(eigen.true)){
+  count <- sum(eigen.vals > eigen.true$eigen.min[i] & eigen.vals <= eigen.true$eigen.max[i])
+  if(eigen.true$eigen.min[i] ==0){
+    count <- count + sum(eigen.vals == 0)
+  }
+  eigen.true$prop.eigen[i] <- count / 77
+}
+
+#Plot
+eigen.frame %>%
+  ggplot(aes(x = factor(eigen.minimum), 
+             y = prop.eigen )) +
+  geom_boxplot() + 
+  geom_point(data = eigen.true, 
+             aes(x =factor(eigen.min), 
+                 y = prop.eigen ), color= "red") +
+  xlab('Eigenvector Centrality') + 
+  ylab("Proportion with eigenvector range in each simulation") +
+  ggtitle("Simulation Results of Eigenvector")+
+  scale_x_discrete(labels = c("[0.0, 0.1]", "(0.1, 0.2]", "(0.2, 0.3]",
+                              "(0.3, 0.4]", "(0.4, 0.5]", "(0.5, 0.6]",
+                              "(0.6, 0.7]", "(0.7, 0.8]", "(0.8, 0.9]",
+                              "(0.9, 0.10]")) +
+  theme_minimal()+
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+
+
+## Betweenness - Figure 2(d)
+
+between.frame <- as.data.frame(expand.grid(1:N, seq(from = 0, to = 0.36, by = 0.04)  ))
+colnames(between.frame) <- c("samp.number", "between.minimum")
+between.frame$between.maximum <- between.frame$between.minimum+.04
+between.frame$prop.between <- NA
+
+for(i in 1:nrow(between.frame)){
+  #get the degrees
+  between.temp <- between.sim[, between.frame$samp.number[i]]
+  
+  #get the number of times that strenth categorty occurred in that sample
+  if(between.frame$between.minimum[i] == 0){
+    count <-  sum((between.temp >= between.frame$between.minimum[i]) & (between.temp <=between.frame$between.maximum[i] ))
+  }else{
+    count <-  sum((between.temp > between.frame$between.minimum[i]) & (between.temp <=between.frame$between.maximum[i] ))
+  }
+  
+  # get prob of that between value occurring 
+  between.frame$prop.between[i] <- count / 77
+  
+  
+}
+
+
+between.true <- data.frame(between.min = seq(from = 0, to = 0.36, by = 0.04), 
+                            between.max = seq(from = 0, to = 0.36, by = 0.04) + 0.4,
+                            prop.between = 0)
+between.vals <- igraph::betweenness(enron77.undir, normalized = TRUE)
+
+for(i in 1:nrow(between.true)){
+  count <- sum(between.vals > between.true$between.min[i] & between.vals <= between.true$between.max[i])
+  if(between.true$between.min[i] ==0){
+    count <- count + sum(between.vals == 0)
+  }
+  between.true$prop.between[i] <- count / 77
+}
+
+
+
+between.frame %>%
+  ggplot(aes(x = factor(between.minimum), 
+             y = prop.between )) +
+  geom_boxplot() + 
+  geom_point(data = between.true, 
+             aes(x =factor(between.min), 
+                 y = prop.between ), color= "red") +
+  xlab('Betweenness') + 
+  ylab("Proportion with betweenness range in each simulation") +
+  ggtitle("Simulation Results of Betweenness") +
+  scale_x_discrete(labels = c("[0.0, 0.04]", "(0.04, 0.08]", "(0.08, 0.12]",
+                              "(0.12, 0.16]", "(0.16, 0.20]", "(0.20, 0.24]",
+                              "(0.24, 0.28]", "(0.28, 0.32]", "(0.32, 0.36]",
+                              "(0.36, 0.40]")) +
+  theme_minimal()+
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+```
+
+
+
+

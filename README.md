@@ -8,6 +8,8 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
 -   R/ - code to run simulations and generate plots
 
+    -   chapter1-figures.R - code to generate all figures in Chapter 1 of dissertation
+
     -   clash-of-kings-simulation.R - JaB for Clash of Kings network
 
     -   game-of-thrones-simulation.R - JaB for Game of Thrones network
@@ -22,6 +24,8 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   paul-revere-simulations.R - JaB simulation study with Paul Revere network
 
+    -   trump-simulation.R - JaB for TrumpWorld network. Also includes generating simulated null distributions for Jason Greenblatt.
+
 -   data/ - Rdata files generated from simulation R scripts. Some files are too large to push to GitHub, but can be generated from R scripts.
 
     -   cok-eigen.Rdata - results from Clash of Kings network with eigenvector centrality
@@ -30,8 +34,20 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   got-eigen.Rdata - results of Game of Thrones network with eigenvector centrality
 
-    -   got-strength.Rdata - results of Game of Thrones network with strength centrality
+    -   got-strength.Rdata - results of Game of Thrones network with strength centrality and bootstrap samples (file is too large to push to GitHub)
 
     -   karate-distances.Rdata - results of simulation study with karate network
 
     -   pr-distances.Rdata -results of simulation study with Paul Revere network
+
+    -   trump-betweenness.Rdata - results of TrumpWorld network with betweenness centrality
+
+    -   trump-boot-samps.Rdata - bootstrap samples used in TrumpWorld simulations (too large to store on GitHub)
+
+    -   trump-degree.Rdata - results of TrumpWorld network with degree centrality
+
+    -   trump-eigen.Rdata - results of TrumpWorld network with eigenvector centrality
+
+Data set sources:
+
+-   Trump World: The orignal TrumpWorld data is from Buzzfeed News and can be found [here]([https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).](https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).) and is included in the [JaB package on GitHub](<https://github.com/olbeck/jab>)
