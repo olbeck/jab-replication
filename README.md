@@ -2,7 +2,7 @@
 
 Replication files for Jackknife-after-Bootstrap in dissertation
 
-Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-roar-collab-online/>], Penn State's super computer.
+Most simulations were run on [ROAR](https://www.icds.psu.edu/access-roar-and-roar-collab-online/), Penn State's super computer.
 
 ## File Structure
 
@@ -14,7 +14,7 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   game-of-thrones-simulation.R - JaB for Game of Thrones network
 
-    -   ice-distance.R - ICE distance, file copied directly from (here)[<https://github.com/Siva-47/ICE/blob/main/methods/ICE.R>]
+    -   ice-distance.R - ICE distance, file copied directly from [here](https://github.com/Siva-47/ICE/blob/main/methods/ICE.R)
 
     -   jab-for-regression.R - JaB for linear regression simulation
 
@@ -34,7 +34,7 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   got-eigen.Rdata - results of Game of Thrones network with eigenvector centrality
 
-    -   got-strength.Rdata - results of Game of Thrones network with strength centrality and bootstrap samples (file is too large to push to GitHub)
+    -   got-strength.Rdata - results of Game of Thrones network with strength centrality and bootstrap samples (file is too large to push to GitHub]
 
     -   karate-distances.Rdata - results of simulation study with karate network
 
@@ -42,7 +42,7 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   trump-betweenness.Rdata - results of TrumpWorld network with betweenness centrality
 
-    -   trump-boot-samps.Rdata - bootstrap samples used in TrumpWorld simulations (too large to store on GitHub)
+    -   trump-boot-samps.Rdata - bootstrap samples used in TrumpWorld simulations (too large to store on GitHub]
 
     -   trump-degree.Rdata - results of TrumpWorld network with degree centrality
 
@@ -50,10 +50,10 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
 ## Data set sources
 
--   Karate network: In the igraphdata package (here)[<https://rdrr.io/cran/igraphdata/man/karate.html>]
+-   Karate network: In the igraphdata package [here](https://rdrr.io/cran/igraphdata/man/karate.html)
 
--   Paul Revere network: Data set published (here)[<https://github.com/kjhealy/revere>]. Original data set is in David Hackett Fischer's *Paul Revere's Ride* (Oxford University Press, 1995).
+-   Paul Revere network: Data set published [here](https://github.com/kjhealy/revere) Original data set is in David Hackett Fischer's *Paul Revere's Ride* (Oxford University Press, 1995].
 
--   *A Song of Ice and Fire* (George R.R. Martin) data found (here)[<https://github.com/harsh2201/GOTNetworkAnalysis>].
+-   *A Song of Ice and Fire* (George R.R. Martin) data found [here](https://github.com/harsh2201/GOTNetworkAnalysis)
 
--   Trump World: The orignal TrumpWorld data is from Buzzfeed News and can be found [here]([https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).](https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).) and is included in the [JaB package on GitHub](<https://github.com/olbeck/jab>)
+-   Trump World: The orignal TrumpWorld data is from Buzzfeed News and can be found [here](https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld) and is included in the [JaB package on GitHub](https://github.com/olbeck/jab)
