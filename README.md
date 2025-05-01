@@ -48,6 +48,12 @@ Most simulations were run on (ROAR)[<https://www.icds.psu.edu/access-roar-and-ro
 
     -   trump-eigen.Rdata - results of TrumpWorld network with eigenvector centrality
 
-Data set sources:
+## Data set sources
+
+-   Karate network: In the igraphdata package (here)[<https://rdrr.io/cran/igraphdata/man/karate.html>]
+
+-   Paul Revere network: Data set published (here)[<https://github.com/kjhealy/revere>]. Original data set is in David Hackett Fischer's *Paul Revere's Ride* (Oxford University Press, 1995).
+
+-   *A Song of Ice and Fire* (George R.R. Martin) data found (here)[<https://github.com/harsh2201/GOTNetworkAnalysis>].
 
 -   Trump World: The orignal TrumpWorld data is from Buzzfeed News and can be found [here]([https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).](https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld).) and is included in the [JaB package on GitHub](<https://github.com/olbeck/jab>)
